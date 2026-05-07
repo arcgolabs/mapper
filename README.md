@@ -48,6 +48,8 @@ go run ./example/converters
 go run ./example/hooks
 go run ./example/validation
 go run ./example/instances
+go run ./example/patch-update
+go run ./example/dynamic-input
 ```
 
 `MapSlice` and `MapMap` infer the source type from the argument, so only the
@@ -80,6 +82,32 @@ Change the tag name when integrating with an existing model:
 
 ```go
 m := mapper.New(mapper.WithTagName("map"))
+```
+
+Use fallback tags when models already carry tags such as `json` or `yaml`:
+
+```go
+dto, err := mapper.Map[UserDTO](input, mapper.WithFallbackTags("json", "yaml"))
+```
+
+Destination `mapper` tags can also declare required fields and simple defaults:
+
+```go
+type UserDTO struct {
+	Name string `mapper:",required"`
+	Role string `mapper:",default=user"`
+}
+```
+
+`map[string]any` sources can be mapped into structs. This is useful for decoded
+configuration, JSON-like data, and private protocol payloads that first land in
+a dynamic map:
+
+```go
+dto, err := mapper.Map[UserDTO](
+	map[string]any{"id": 7, "name": "Ada"},
+	mapper.WithFallbackTags("json"),
+)
 ```
 
 ## Converters
@@ -173,6 +201,14 @@ m := mapper.New(
 _ = m.MapInto(&dto, source)
 ```
 
+For small custom validators, use `ValidationFunc`:
+
+```go
+err := mapper.MapInto(&dto, source, mapper.WithValidator(mapper.ValidationFunc(func(v any) error {
+	return nil
+})))
+```
+
 ## Strict Mode
 
 By default, unmatched destination fields are left unchanged. Use strict mode to
@@ -180,6 +216,27 @@ turn those into errors.
 
 ```go
 dto, err := mapper.Map[UserDTO](user, mapper.Strict())
+```
+
+## Patch Updates
+
+`MapInto` can be used for patch/update workflows. `IgnoreNil` and `IgnoreZero`
+leave the existing destination value untouched for nil or zero source values:
+
+```go
+err := mapper.MapInto(&entity, patch, mapper.IgnoreNil(), mapper.IgnoreZero())
+```
+
+## Errors
+
+Field-level mapping failures wrap `MappingError`, which carries the field path
+and source/destination types. Validation failures wrap `ValidationError`.
+
+```go
+var mappingErr *mapper.MappingError
+if errors.As(err, &mappingErr) {
+	fmt.Println(mappingErr.Path)
+}
 ```
 
 ## Taskfile
@@ -218,9 +275,12 @@ eviction.
 - Destination fields are the mapping target; source-only fields are ignored.
 - Exported fields only are mapped.
 - `mapper:"-"` skips a destination field.
+- `mapper:",required"` requires a matching source field.
+- `mapper:",default=value"` fills missing or zero source values.
 - Converters take precedence over built-in assignment and conversion.
 - Hooks run for the top-level call only, not for nested fields or collection items.
 - Nil source pointers, maps, and slices map to zero values.
+- `IgnoreNil` and `IgnoreZero` preserve destination values in patch-style calls.
 - Whole struct, slice, and map conversion is avoided so nested mapping and
   converters can run field-by-field.
 - `MapInto` preserves unmatched destination fields unless strict mode is enabled.
@@ -230,13 +290,3 @@ eviction.
 - [Design](docs/design.md)
 - [Performance](docs/performance.md)
 - [Roadmap](docs/roadmap.md)
-```
-
-## Cache
-
-Mapping plans are cached with `github.com/hashicorp/golang-lru/v2`. The default
-cache size is 1024 type pairs.
-
-```go
-m := mapper.New(mapper.WithPlanCacheSize(4096))
-```

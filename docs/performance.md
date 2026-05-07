@@ -16,17 +16,25 @@ minimal setup, and cached reflection metadata.
   lock-free reads.
 - Converter-aware field execution checks exact converter keys only for fields
   that have a registered converter snapshot; no-converter mappings skip that path.
+- Reused per-context execution snapshots are stored in `collectionx/mapping.MultiMap`
+  so a struct plan only pays converter matching once when the same plan is used
+  repeatedly in a mapping context.
 - Collection mapping uses `github.com/arcgolabs/collectionx/list` reduce helpers.
 - Reflect map iteration uses `MapRange` through a lightweight iterable adapter.
+- Slice and map element mapping precomputes element operations before iterating.
 
 ## Current Benchmarks
 
 On the local Windows development machine:
 
 ```text
-BenchmarkMapWarmPlan-16               ~725 ns/op       288 B/op   10 allocs/op
-BenchmarkMapWarmPlanNoConverter-16    ~380-395 ns/op   144 B/op    6 allocs/op
-BenchmarkSliceWarmPlan-16            ~2580-2700 ns/op   848 B/op   36 allocs/op
+BenchmarkMapWarmPlan-16               ~740-800 ns/op   336 B/op   10 allocs/op
+BenchmarkMapWarmPlanNoConverter-16    ~395-440 ns/op   192 B/op    6 allocs/op
+BenchmarkSliceWarmPlan-16            ~2900-3300 ns/op  2882 B/op   41 allocs/op
+BenchmarkNestedStructWarmPlan-16      ~280 ns/op       176 B/op    4 allocs/op
+BenchmarkLargeSliceWarmPlanNoConverter-16
+                                      ~36 us/op       13.7 KB/op 649 allocs/op
+BenchmarkMapStringAnyToStruct-16     ~2.0-2.2 us/op   3.4 KB/op  40 allocs/op
 ```
 
 The default map and slice benchmarks use a warm plan cache and one converter
@@ -39,13 +47,15 @@ Run benchmarks locally:
 go test -bench . -benchmem
 ```
 
+The benchmark suite also includes nested structs, large slices, dynamic
+`map[string]any` input, converter-heavy mapping, and validation-on mapping.
+
 ## Tradeoffs
 
-Converter lookup remains dynamic because converters can be registered per call.
-Structural plans are cached independently from converter sets, which keeps the
-cache stable and avoids cache explosion.
+Converter selection remains context-local because converters can be registered
+per call. Structural plans are cached independently from converter sets, which
+keeps the cache stable and avoids cache explosion.
 
 Field-level execution plans precompute the built-in path while preserving
-converter precedence. A future optimization can add a converter-aware execution
-snapshot per mapping context, so fields without possible converters can skip
-converter lookup entirely.
+converter precedence. Dynamic `interface{}` paths still use runtime lookup
+because the concrete source type is not known when the structural plan is built.

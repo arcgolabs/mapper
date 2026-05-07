@@ -15,8 +15,16 @@ func (ctx *mappingContext) mapSlice(srcVal, dstVal reflect.Value, path string) e
 
 	out := reflect.MakeSlice(dstVal.Type(), srcVal.Len(), srcVal.Len())
 	indices := indexRange(srcVal.Len())
+	op := compileValueOp(srcVal.Type().Elem(), dstVal.Type().Elem())
 	mapped, err := cxlist.ReduceErrList(indices, out, func(acc reflect.Value, _ int, item int) (reflect.Value, error) {
-		if err := ctx.mapValue(srcVal.Index(item), acc.Index(item), fmt.Sprintf("%s[%d]", path, item)); err != nil {
+		itemPath := fmt.Sprintf("%s[%d]", path, item)
+		var err error
+		if ctx.converters.Len() == 0 {
+			err = ctx.mapPlannedValueWithoutConverter(op, srcVal.Index(item), acc.Index(item), itemPath)
+		} else {
+			err = ctx.mapPlannedValue(op, srcVal.Index(item), acc.Index(item), itemPath)
+		}
+		if err != nil {
 			return acc, err
 		}
 		return acc, nil
@@ -37,14 +45,27 @@ func (ctx *mappingContext) mapMap(srcVal, dstVal reflect.Value, path string) err
 
 	out := reflect.MakeMapWithSize(dstVal.Type(), srcVal.Len())
 	entries := reflectMapEntries{value: srcVal}
+	keyOp := compileValueOp(srcVal.Type().Key(), dstVal.Type().Key())
+	elemOp := compileValueOp(srcVal.Type().Elem(), dstVal.Type().Elem())
 	mapped, err := cxlist.ReduceErrList(entries, out, func(acc reflect.Value, _ int, entry mapEntry) (reflect.Value, error) {
 		dstKey := reflect.New(dstVal.Type().Key()).Elem()
-		if err := ctx.mapValue(entry.key, dstKey, path+"[key]"); err != nil {
+		var err error
+		if ctx.converters.Len() == 0 {
+			err = ctx.mapPlannedValueWithoutConverter(keyOp, entry.key, dstKey, path+"[key]")
+		} else {
+			err = ctx.mapPlannedValue(keyOp, entry.key, dstKey, path+"[key]")
+		}
+		if err != nil {
 			return acc, err
 		}
 
 		dstValue := reflect.New(dstVal.Type().Elem()).Elem()
-		if err := ctx.mapValue(entry.value, dstValue, path+"[value]"); err != nil {
+		if ctx.converters.Len() == 0 {
+			err = ctx.mapPlannedValueWithoutConverter(elemOp, entry.value, dstValue, path+"[value]")
+		} else {
+			err = ctx.mapPlannedValue(elemOp, entry.value, dstValue, path+"[value]")
+		}
+		if err != nil {
 			return acc, err
 		}
 

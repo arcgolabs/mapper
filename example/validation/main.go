@@ -91,4 +91,17 @@ func main() {
 	} else {
 		fmt.Println("error:", err)
 	}
+
+	fmt.Println("6) custom validation adapter:")
+	_, err = mapper.Map[DTO](
+		Source{Name: "Ada", Email: "ada@example.com", Age: 22},
+		mapper.WithValidator(mapper.ValidationFunc(func(value any) error {
+			dto, ok := value.(*DTO)
+			if ok && dto.Name == "Ada" {
+				return errors.New("reserved name")
+			}
+			return nil
+		})),
+	)
+	fmt.Printf("err=%v\n", err)
 }

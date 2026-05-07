@@ -33,14 +33,14 @@ func main() {
 	fmt.Println("error converter:")
 
 	type NumSource struct {
-		Raw string
+		Value string
 	}
 	type NumDTO struct {
 		Value int
 	}
 
 	_, err = mapper.Map[NumDTO](
-		NumSource{Raw: "bad-number"},
+		NumSource{Value: "bad-number"},
 		mapper.ConverterE(func(v string) (int, error) {
 			return 0, errors.New("invalid number")
 		}),

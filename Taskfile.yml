@@ -29,8 +29,10 @@ tasks:
       - go run ./example/collections
       - go run ./example/converters
       - go run ./example/hooks
-      - go run ./example/instances
       - go run ./example/validation
+      - go run ./example/instances
+      - go run ./example/patch-update
+      - go run ./example/dynamic-input
 
   preflight:
     desc: Run fast validation before release.

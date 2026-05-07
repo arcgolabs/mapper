@@ -11,6 +11,10 @@ type Config struct {
 	// The default tag is "mapper".
 	TagName string
 
+	// FallbackTagNames are consulted for source aliases and destination field
+	// names when the primary mapper tag does not provide an explicit name.
+	FallbackTagNames []string
+
 	// PlanCacheSize is the maximum number of source/destination mapping plans
 	// held in the mapper cache. The default is 1024.
 	PlanCacheSize int
@@ -18,6 +22,13 @@ type Config struct {
 	// Strict reports an error when an exported destination field has no matching
 	// source field. When false, unmatched destination fields are left unchanged.
 	Strict bool
+
+	// IgnoreNil leaves the destination unchanged when the source value is nil.
+	IgnoreNil bool
+
+	// IgnoreZero leaves the destination unchanged when the source value is the
+	// zero value for its type.
+	IgnoreZero bool
 }
 
 type settings struct {
@@ -48,11 +59,44 @@ func WithTagName(name string) Option {
 	}
 }
 
+// WithFallbackTags adds fallback struct tags used for field names, for example
+// json or yaml. Mapper tag options such as required and default still belong to
+// the primary mapper tag.
+func WithFallbackTags(names ...string) Option {
+	return func(s *settings) {
+		s.config.FallbackTagNames = append([]string(nil), names...)
+	}
+}
+
 // WithStrict toggles strict destination-field validation.
 func WithStrict(strict bool) Option {
 	return func(s *settings) {
 		s.config.Strict = strict
 	}
+}
+
+// WithIgnoreNil toggles patch-style behavior for nil source values.
+func WithIgnoreNil(ignore bool) Option {
+	return func(s *settings) {
+		s.config.IgnoreNil = ignore
+	}
+}
+
+// IgnoreNil leaves destination fields unchanged when the matching source value is nil.
+func IgnoreNil() Option {
+	return WithIgnoreNil(true)
+}
+
+// WithIgnoreZero toggles patch-style behavior for zero source values.
+func WithIgnoreZero(ignore bool) Option {
+	return func(s *settings) {
+		s.config.IgnoreZero = ignore
+	}
+}
+
+// IgnoreZero leaves destination fields unchanged when the matching source value is zero.
+func IgnoreZero() Option {
+	return WithIgnoreZero(true)
 }
 
 // WithPlanCacheSize changes the maximum number of cached mapping plans.

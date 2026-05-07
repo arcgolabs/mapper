@@ -2,22 +2,22 @@
 
 ## Near Term
 
-- Converter-aware execution snapshots for fields with no possible converter.
-- More focused error types for field mapping failures.
-- Optional default-value tags.
-- Optional required-field tags.
+- Optional field-level naming strategies beyond normalized names.
+- Broader default parsing for collection and struct literals.
+- More examples for update/patch workflows with real persistence models.
+- Optional strict handling for unknown dynamic map keys.
 
 ## API Usability
 
 - Add examples for common DTO/entity mapping.
 - Add examples for enum and ID converters.
-- Add examples for patch/update use cases with `MapInto`.
+- Add examples for dynamic input from decoded protocol or configuration maps.
 
 ## Performance
 
-- Avoid converter lookup when no converter snapshot is present.
 - Explore cached destination allocation paths for common pointer fields.
-- Add benchmark variants for nested structs, slices, and maps.
+- Profile dynamic `map[string]any` mapping and nested source-path lookup.
+- Explore lower-allocation collection mapping for large slices.
 
 ## Non Goals
 

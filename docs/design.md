@@ -24,10 +24,12 @@ Top-level mapping runs in this order:
 Field mapping runs in this order:
 
 1. Resolve source and destination field values from the cached plan.
-2. Apply an exact converter when one is registered.
-3. Use the precompiled built-in operation when possible.
-4. Recurse into pointers, slices, maps, and structs.
-5. Return a path-aware error when the value cannot be mapped.
+2. Apply a default tag value when the source value is missing or zero.
+3. Skip nil or zero source values when patch-style options request it.
+4. Apply an exact converter when one is registered.
+5. Use the precompiled built-in operation when possible.
+6. Recurse into pointers, slices, maps, and structs.
+7. Return a path-aware error when the value cannot be mapped.
 
 ## Field Matching
 
@@ -44,12 +46,27 @@ type UserDTO struct {
 }
 ```
 
+Tags can also express required source fields and simple defaults:
+
+```go
+type UserDTO struct {
+	Name string `mapper:",required"`
+	Role string `mapper:",default=user"`
+}
+```
+
 Nested source paths are supported in tags:
 
 ```go
 type UserDTO struct {
 	Name string `mapper:"profile.name"`
 }
+```
+
+Fallback tags can be enabled when existing models already carry field names:
+
+```go
+dto, err := mapper.Map[UserDTO](input, mapper.WithFallbackTags("json", "yaml"))
 ```
 
 ## Converters
@@ -71,6 +88,13 @@ a new snapshot instead of mutating the existing one.
 
 Converters intentionally match exact source and destination types. This keeps
 selection predictable and avoids implicit converter chains.
+
+When the same struct plan is reused inside a mapping context, such as slice item
+mapping, the context stores a converter-aware execution snapshot in
+`collectionx/mapping.MultiMap`. Fields with an exact converter call it directly;
+fields without a possible converter skip converter map lookup and use the
+precompiled operation. Single top-level struct mapping keeps the cheaper direct
+lookup path to avoid cache allocation overhead.
 
 ## Hooks
 
@@ -108,3 +132,26 @@ still take precedence over assignment and conversion.
 Non-cache internal lookup structures use `collectionx/mapping` containers for
 consistency across the codebase. The plan cache remains a dedicated LRU because
 it needs bounded eviction behavior.
+
+## Dynamic Map Sources
+
+`map[string]any` sources are supported for struct destinations. Map keys are
+matched using the same normalization rules as struct fields, and destination
+tags plus fallback tags are honored. Nested source paths can traverse nested
+maps or structs.
+
+This is intended for decoded dynamic input such as configuration, JSON-like
+payloads, and private protocol messages that have already been parsed into a
+map representation.
+
+## Patch Updates
+
+`IgnoreNil` and `IgnoreZero` change mapping into patch/update semantics by
+leaving existing destination values unchanged when the source value should be
+treated as absent. Explicit default tags take precedence over ignore options.
+
+## Errors And Validation
+
+Value mapping failures return `MappingError` with a field path and source /
+destination types. Validation failures return `ValidationError` while preserving
+the original validator error through `Unwrap`.

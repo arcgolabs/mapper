@@ -3,6 +3,7 @@ package mapper
 import (
 	"errors"
 	"reflect"
+	"strings"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 )
@@ -20,11 +21,12 @@ type Mapper struct {
 }
 
 type mappingContext struct {
-	mapper     *Mapper
-	config     Config
-	converters converterMap
-	hooks      *hookSet
-	validator  ValidationEngine
+	mapper         *Mapper
+	config         Config
+	converters     converterMap
+	hooks          *hookSet
+	validator      ValidationEngine
+	executionPlans executionPlanMap
 }
 
 // New creates a Mapper with optional configuration and reusable converters.
@@ -275,7 +277,7 @@ func (m *Mapper) newContext(opts []Option) (mappingContext, error) {
 }
 
 func (m *Mapper) getPlan(srcType, dstType reflect.Type, cfg Config) *plan {
-	key := planKey{src: srcType, dst: dstType, tag: cfg.TagName}
+	key := planKey{src: srcType, dst: dstType, tag: tagCacheKey(cfg)}
 	if cached, ok := m.plans.Get(key); ok {
 		return cached
 	}
@@ -283,4 +285,11 @@ func (m *Mapper) getPlan(srcType, dstType reflect.Type, cfg Config) *plan {
 	p := buildPlan(srcType, dstType, cfg)
 	m.plans.Add(key, p)
 	return p
+}
+
+func tagCacheKey(cfg Config) string {
+	if len(cfg.FallbackTagNames) == 0 {
+		return cfg.TagName
+	}
+	return cfg.TagName + "\x00" + strings.Join(cfg.FallbackTagNames, "\x00")
 }

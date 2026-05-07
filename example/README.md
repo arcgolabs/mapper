@@ -11,6 +11,10 @@ Each folder below is an independent `package main` example that can be run separ
 - `hooks`: before/after hooks, error hooks, and hook registration.
 - `validation`: destination validation by option and reusable mapper instances.
 - `instances`: package-level API vs reusable mapper instances.
+- `patch-update`: patch-style `MapInto`, `IgnoreNil`, `IgnoreZero`, required
+  fields, and default values.
+- `dynamic-input`: `map[string]any` input, fallback tags, nested paths, and
+  typed mapping errors.
 
 ## Run all examples
 
@@ -22,6 +26,8 @@ go run ./example/converters
 go run ./example/hooks
 go run ./example/validation
 go run ./example/instances
+go run ./example/patch-update
+go run ./example/dynamic-input
 ```
 
 ## Expected outputs
@@ -51,7 +57,7 @@ map: 10 20
 converter by option:
 2026-05-07T10:30:00Z
 error converter:
-invalid number
+mapper: $.Value cannot map string to int: invalid number
 reusable mapper converter:
 ID-7
 ```
@@ -60,26 +66,28 @@ ID-7
 
 ```text
 local before/after hooks:
-10 Ada Lovelace mapped
+1 Ada Lovelace mapped
 registered after-map hook:
 U-3
 error before-map hook:
-id is required
+mapper: before-map hook main.Source -> *main.UserDTO failed: id is required
 ```
 
 ### `validation`
 
 ```text
 1) built-in validation by option:
-mapped? err=mapper: destination validation failed: Key: 'DTO.Name' Error:Field validation for 'Name' failed on the 'min' tag
+err=mapper: destination validation failed for main.DTO: Key: 'DTO.Name' Error:Field validation for 'Name' failed on the 'min' tag
 2) mapped value with built-in validation:
 mapped=main.DTO{Name:"Ada", Email:"ada@example.com", Age:22} err=<nil>
 3) register custom validator once and share it on a mapper instance:
 mapped=main.TaggedDTO{Name:"Grace", Email:"grace@mycorp.example", Age:31} err=<nil>
 4) per-call custom validator can override instance defaults:
-mapped? err=mapper: destination validation failed: Key: 'TaggedDTO.Email' Error:Field validation for 'Email' failed on the 'mycorp' tag
+mapped? err=mapper: destination validation failed for main.TaggedDTO: Key: 'TaggedDTO.Email' Error:Field validation for 'Email' failed on the 'mycorp' tag
 5) validation error details:
 failed: Name min, Age gte
+6) custom validation adapter:
+err=mapper: destination validation failed for main.DTO: reserved name
 ```
 
 ### `instances`
@@ -87,4 +95,18 @@ failed: Name min, Age gte
 ```text
 package-level: 2
 reusable: 20
+```
+
+### `patch-update`
+
+```text
+patch: {Name:Grace Email:ada@example.com Age:36 Role:admin} err=<nil>
+create: {Name:Lin Role:user Active:true} err=<nil>
+```
+
+### `dynamic-input`
+
+```text
+dynamic: {ID:7 Name:Ada Email:ada@example.com Role:user} err=<nil>
+mapping error: path=$.ID src=[]string dst=int
 ```

@@ -15,17 +15,22 @@ type planKey struct {
 }
 
 type plan struct {
-	steps   []fieldStep
-	missing []string
+	steps           []fieldStep
+	missing         []string
+	requiredMissing []string
 }
 
 type fieldStep struct {
-	srcIndex []int
-	dstIndex []int
-	srcName  string
-	dstName  string
-	convKey  conversionKey
-	op       valueOp
+	srcIndex     []int
+	dstIndex     []int
+	srcName      string
+	dstName      string
+	convKey      conversionKey
+	op           valueOp
+	hasSource    bool
+	required     bool
+	defaultValue string
+	hasDefault   bool
 }
 
 type sourceField struct {
@@ -55,29 +60,42 @@ func buildPlan(srcType, dstType reflect.Type, cfg Config) *plan {
 			continue
 		}
 
-		tagName, skip, hasTag := parseTag(field.Tag.Get(cfg.TagName))
-		if skip {
+		spec := destinationFieldSpec(field, cfg)
+		if spec.skip {
 			continue
 		}
 
-		sourceName := field.Name
-		if hasTag && tagName != "" {
-			sourceName = tagName
-		}
-
-		src, ok := resolveSourceField(srcType, sourceFields, sourceName, cfg)
+		src, ok := resolveSourceField(srcType, sourceFields, spec.sourceName, cfg)
 		if !ok {
+			if spec.hasDefault {
+				p.steps = append(p.steps, fieldStep{
+					dstIndex:     field.Index,
+					srcName:      spec.sourceName,
+					dstName:      field.Name,
+					required:     spec.required,
+					defaultValue: spec.defaultValue,
+					hasDefault:   true,
+				})
+				continue
+			}
+			if spec.required {
+				p.requiredMissing = append(p.requiredMissing, field.Name)
+			}
 			p.missing = append(p.missing, field.Name)
 			continue
 		}
 
 		p.steps = append(p.steps, fieldStep{
-			srcIndex: src.index,
-			dstIndex: field.Index,
-			srcName:  sourceName,
-			dstName:  field.Name,
-			convKey:  conversionKey{src: src.typ, dst: field.Type},
-			op:       compileValueOp(src.typ, field.Type),
+			srcIndex:     src.index,
+			dstIndex:     field.Index,
+			srcName:      spec.sourceName,
+			dstName:      field.Name,
+			convKey:      conversionKey{src: src.typ, dst: field.Type},
+			op:           compileValueOp(src.typ, field.Type),
+			hasSource:    true,
+			required:     spec.required,
+			defaultValue: spec.defaultValue,
+			hasDefault:   spec.hasDefault,
 		})
 	}
 
@@ -129,15 +147,15 @@ func collectSourceFields(t reflect.Type, cfg Config) *cxmap.Map[string, sourceFi
 			continue
 		}
 
-		tagName, skip, hasTag := parseTag(field.Tag.Get(cfg.TagName))
-		if skip {
+		spec := sourceFieldSpec(field, cfg)
+		if spec.skip {
 			continue
 		}
 
 		info := sourceField{index: field.Index, typ: field.Type}
 		addSourceAlias(out, field.Name, info)
-		if hasTag && tagName != "" {
-			addSourceAlias(out, tagName, info)
+		for _, alias := range spec.aliases {
+			addSourceAlias(out, alias, info)
 		}
 	}
 
@@ -186,16 +204,97 @@ func resolveSourcePath(srcType reflect.Type, path string, cfg Config) (sourceFie
 	return sourceField{index: index, typ: typ}, true
 }
 
-func parseTag(tag string) (name string, skip, hasTag bool) {
-	if tag == "" {
-		return "", false, false
+type tagSpec struct {
+	name         string
+	sourceName   string
+	aliases      []string
+	skip         bool
+	hasName      bool
+	hasTag       bool
+	required     bool
+	defaultValue string
+	hasDefault   bool
+}
+
+func sourceFieldSpec(field reflect.StructField, cfg Config) tagSpec {
+	spec := parseTag(field.Tag.Get(cfg.TagName))
+	if spec.skip {
+		return spec
 	}
 
-	name = strings.TrimSpace(strings.Split(tag, ",")[0])
-	if name == "-" {
-		return "", true, true
+	if spec.hasName {
+		spec.aliases = append(spec.aliases, spec.name)
 	}
-	return name, false, true
+	for _, tagName := range cfg.FallbackTagNames {
+		if name, ok := parseTagName(field.Tag.Get(tagName)); ok {
+			spec.aliases = append(spec.aliases, name)
+		}
+	}
+	return spec
+}
+
+func destinationFieldSpec(field reflect.StructField, cfg Config) tagSpec {
+	spec := parseTag(field.Tag.Get(cfg.TagName))
+	if spec.skip {
+		return spec
+	}
+
+	spec.sourceName = field.Name
+	if spec.hasName {
+		spec.sourceName = spec.name
+		return spec
+	}
+
+	for _, tagName := range cfg.FallbackTagNames {
+		if name, ok := parseTagName(field.Tag.Get(tagName)); ok {
+			spec.sourceName = name
+			return spec
+		}
+	}
+	return spec
+}
+
+func parseTag(tag string) tagSpec {
+	if tag == "" {
+		return tagSpec{}
+	}
+
+	spec := tagSpec{hasTag: true}
+	parts := strings.Split(tag, ",")
+	name := strings.TrimSpace(parts[0])
+	if name == "-" {
+		spec.skip = true
+		return spec
+	}
+	if name != "" {
+		spec.name = name
+		spec.hasName = true
+	}
+
+	for _, option := range parts[1:] {
+		option = strings.TrimSpace(option)
+		switch {
+		case option == "required":
+			spec.required = true
+		case strings.HasPrefix(option, "default="):
+			spec.defaultValue = strings.TrimPrefix(option, "default=")
+			spec.hasDefault = true
+		}
+	}
+
+	return spec
+}
+
+func parseTagName(tag string) (string, bool) {
+	if tag == "" {
+		return "", false
+	}
+
+	name := strings.TrimSpace(strings.Split(tag, ",")[0])
+	if name == "" || name == "-" {
+		return "", false
+	}
+	return name, true
 }
 
 func isExported(field reflect.StructField) bool {

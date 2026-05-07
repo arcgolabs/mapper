@@ -1,14 +1,21 @@
 package mapper
 
 import (
-	"fmt"
 	"reflect"
 )
+
+// ValidationFunc adapts a function to ValidationEngine.
+type ValidationFunc func(any) error
+
+// Struct validates v.
+func (f ValidationFunc) Struct(v any) error {
+	return f(v)
+}
 
 func (ctx *mappingContext) validate(dstVal reflect.Value) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("mapper: destination validation panicked: %v", recovered)
+			err = &ValidationError{ValueType: valueType(dstVal), Cause: panicError{value: recovered}}
 		}
 	}()
 
@@ -38,7 +45,14 @@ func (ctx *mappingContext) validate(dstVal reflect.Value) (err error) {
 	}
 
 	if err = ctx.validator.Struct(dstVal.Interface()); err != nil {
-		return fmt.Errorf("mapper: destination validation failed: %w", err)
+		return &ValidationError{ValueType: value.Type(), Cause: err}
 	}
 	return nil
+}
+
+func valueType(v reflect.Value) reflect.Type {
+	if !v.IsValid() {
+		return nil
+	}
+	return v.Type()
 }
