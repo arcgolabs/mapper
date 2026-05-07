@@ -35,6 +35,21 @@ dtos, err := mapper.MapSlice[UserDTO](users)
 dtoByID, err := mapper.MapMap[UserDTO](usersByID)
 ```
 
+### Examples
+
+The repository uses a dedicated `example/` directory for runnable usage scenarios.
+See [examples index](example/README.md).
+
+```sh
+go run ./example/basic
+go run ./example/field-mapping
+go run ./example/collections
+go run ./example/converters
+go run ./example/hooks
+go run ./example/validation
+go run ./example/instances
+```
+
 `MapSlice` and `MapMap` infer the source type from the argument, so only the
 destination element/value type needs to be written.
 
@@ -128,6 +143,36 @@ m := mapper.New(
 )
 ```
 
+## Validation
+
+`mapper` can validate the mapped destination through any type that implements:
+
+```go
+type ValidationEngine interface {
+	Struct(any) error
+}
+```
+
+This is intentionally small so you can plug in standard validator implementations
+or custom ones with your own rules:
+
+```go
+import "github.com/go-playground/validator/v10"
+
+validate := validator.New()
+dto, err := mapper.Map[UserDTO](source, mapper.WithValidator(validate))
+```
+
+You can also store the validator on a reusable `Mapper` instance:
+
+```go
+m := mapper.New(
+	mapper.WithTagName("json"),
+	mapper.WithValidator(validate),
+)
+_ = m.MapInto(&dto, source)
+```
+
 ## Strict Mode
 
 By default, unmatched destination fields are left unchanged. Use strict mode to
@@ -135,6 +180,22 @@ turn those into errors.
 
 ```go
 dto, err := mapper.Map[UserDTO](user, mapper.Strict())
+```
+
+## Taskfile
+
+This repository includes a `Taskfile.yml` for reproducible local workflows:
+
+```sh
+# Quality checks
+task preflight
+
+# Run all examples
+task examples
+
+# Create release tag
+task release VERSION=v0.1.0
+task release VERSION=v0.1.0 PUSH=true
 ```
 
 ## Cache And Performance

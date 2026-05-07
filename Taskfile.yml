@@ -1,0 +1,48 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Run the default quality pipeline.
+    cmds:
+      - task: preflight
+
+  fmt:
+    desc: Format all Go source files in the module.
+    cmds:
+      - go fmt ./...
+
+  test:
+    desc: Run unit tests.
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run golangci-lint for the module.
+    cmds:
+      - go tool golangci-lint run ./...
+
+  examples:
+    desc: Run all runnable examples.
+    cmds:
+      - go run ./example/basic
+      - go run ./example/field-mapping
+      - go run ./example/collections
+      - go run ./example/converters
+      - go run ./example/hooks
+      - go run ./example/instances
+      - go run ./example/validation
+
+  preflight:
+    desc: Run fast validation before release.
+    deps: [fmt, test]
+
+  release:
+    desc: Prepare a release tag. Usage: task release VERSION=v1.2.3 [PUSH=true]
+    vars:
+      VERSION:
+        desc: Semver tag such as v1.2.3 or 1.2.3.
+      PUSH:
+        default: "false"
+        desc: Set to true to push the release tag to origin.
+    cmds:
+      - go run ./scripts/release --version {{.VERSION}} --push {{.PUSH}}

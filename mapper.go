@@ -16,6 +16,7 @@ type Mapper struct {
 	converters *converterRegistry
 	hooks      *hookRegistry
 	plans      *lru.Cache[planKey, *plan]
+	validator  ValidationEngine
 }
 
 type mappingContext struct {
@@ -23,6 +24,7 @@ type mappingContext struct {
 	config     Config
 	converters converterMap
 	hooks      *hookSet
+	validator  ValidationEngine
 }
 
 // New creates a Mapper with optional configuration and reusable converters.
@@ -62,6 +64,7 @@ func newMapper(config Config) *Mapper {
 }
 
 func (m *Mapper) mustRegisterSettings(st settings) {
+	m.validator = st.validator
 	for _, fn := range st.converters {
 		if err := m.Register(fn); err != nil {
 			panic(err)
@@ -217,8 +220,15 @@ func (m *Mapper) MapInto(dst, src any, opts ...Option) error {
 		return err
 	}
 	if ctx.hasAfterHooks() {
-		return ctx.runAfterHooks(srcVal, dstVal)
+		if err := ctx.runAfterHooks(srcVal, dstVal); err != nil {
+			return err
+		}
 	}
+
+	if err := ctx.validate(dstVal); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -230,12 +240,16 @@ func (m *Mapper) newContext(opts []Option) (mappingContext, error) {
 		config:     m.config,
 		converters: m.converters.snapshot(),
 		hooks:      newHookSet(beforeHooks, afterHooks),
+		validator:  m.validator,
 	}
 	if len(opts) == 0 {
 		return base, nil
 	}
 
-	st := settings{config: m.config}
+	st := settings{
+		config:    m.config,
+		validator: m.validator,
+	}
 	applyOptions(&st, opts)
 
 	converters, err := mergeConverterMap(base.converters, st.converters)
@@ -256,6 +270,7 @@ func (m *Mapper) newContext(opts []Option) (mappingContext, error) {
 		config:     st.config,
 		converters: converters,
 		hooks:      newHookSet(beforeHooks, afterHooks),
+		validator:  st.validator,
 	}, nil
 }
 

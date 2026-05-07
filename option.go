@@ -1,5 +1,10 @@
 package mapper
 
+// ValidationEngine validates destination values after mapping.
+type ValidationEngine interface {
+	Struct(any) error
+}
+
 // Config contains mapper behavior that affects field discovery and validation.
 type Config struct {
 	// TagName is the struct tag used to bind destination fields to source fields.
@@ -20,6 +25,7 @@ type settings struct {
 	converters  []any
 	beforeHooks []any
 	afterHooks  []any
+	validator   ValidationEngine
 }
 
 // Option configures a mapper call or Mapper instance.
@@ -82,6 +88,15 @@ func ConverterE[S, D any](fn func(S) (D, error)) Option {
 func ConverterFunc(fn any) Option {
 	return func(s *settings) {
 		s.converters = append(s.converters, fn)
+	}
+}
+
+// WithValidator enables destination validation using a custom validator implementation.
+// The type must provide a Struct(any) error method.
+// Set to nil to keep the default (no validation).
+func WithValidator(v ValidationEngine) Option {
+	return func(s *settings) {
+		s.validator = v
 	}
 }
 
