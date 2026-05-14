@@ -1,5 +1,10 @@
 package mapper
 
+import (
+	"fmt"
+	"reflect"
+)
+
 // ValidationEngine validates destination values after mapping.
 type ValidationEngine interface {
 	Struct(any) error
@@ -15,6 +20,10 @@ type Config struct {
 	// names when the primary mapper tag does not provide an explicit name.
 	FallbackTagNames []string
 
+	// NameNormalizer normalizes field names and dynamic map keys for matching.
+	// If nil, normalizeName is used.
+	NameNormalizer func(string) string
+
 	// PlanCacheSize is the maximum number of source/destination mapping plans
 	// held in the mapper cache. The default is 1024.
 	PlanCacheSize int
@@ -29,21 +38,51 @@ type Config struct {
 	// IgnoreZero leaves the destination unchanged when the source value is the
 	// zero value for its type.
 	IgnoreZero bool
+
+	// StrictDynamicMapKeys enables strict validation for map[string]any inputs:
+	// when mapping to a struct, destination fields that are not bound will cause
+	// an error for any source top-level keys that remain unused.
+	StrictDynamicMapKeys bool
+
+	// UpdateStrategy controls how collections and maps are updated.
+	UpdateStrategy UpdateStrategy
+
+	nameNormalizerID string
 }
 
+// UpdateStrategy controls update behavior for collection-valued destination fields.
+type UpdateStrategy string
+
+const (
+	// UpdateReplace overwrites collection fields.
+	UpdateReplace UpdateStrategy = "replace"
+
+	// UpdateMerge appends map entries and appends slice items when mapping
+	// collection fields in nested or top-level structs.
+	UpdateMerge UpdateStrategy = "merge"
+)
+
 type settings struct {
-	config      Config
-	converters  []any
-	beforeHooks []any
-	afterHooks  []any
-	validator   ValidationEngine
+	config           Config
+	converters       []any
+	beforeHooks      []any
+	afterHooks       []any
+	beforeFieldHooks []fieldHookSpec
+	afterFieldHooks  []fieldHookSpec
+	validator        ValidationEngine
 }
 
 // Option configures a mapper call or Mapper instance.
 type Option func(*settings)
 
 func defaultConfig() Config {
-	return Config{TagName: "mapper", PlanCacheSize: 1024}
+	return Config{
+		TagName:          "mapper",
+		PlanCacheSize:    1024,
+		UpdateStrategy:   UpdateReplace,
+		NameNormalizer:   defaultNameNormalizer,
+		nameNormalizerID: "default",
+	}
 }
 
 func newSettings() settings {
@@ -68,10 +107,34 @@ func WithFallbackTags(names ...string) Option {
 	}
 }
 
+// WithNameNormalizer customizes how field names are normalized before matching.
+// The function should be deterministic and stable for equivalent names.
+func WithNameNormalizer(normalizer func(string) string) Option {
+	return func(s *settings) {
+		if normalizer == nil {
+			return
+		}
+		s.config.NameNormalizer = normalizer
+		s.config.nameNormalizerID = normalizeNameID(normalizer)
+	}
+}
+
+func normalizeNameID(normalizer func(string) string) string {
+	return fmt.Sprintf("func:%v", reflect.ValueOf(normalizer).Pointer())
+}
+
 // WithStrict toggles strict destination-field validation.
 func WithStrict(strict bool) Option {
 	return func(s *settings) {
 		s.config.Strict = strict
+	}
+}
+
+// WithStrictDynamicMapKeys enables strict top-level key validation for
+// map[string]any inputs that map into struct destinations.
+func WithStrictDynamicMapKeys(strict bool) Option {
+	return func(s *settings) {
+		s.config.StrictDynamicMapKeys = strict
 	}
 }
 
@@ -92,6 +155,23 @@ func WithIgnoreZero(ignore bool) Option {
 	return func(s *settings) {
 		s.config.IgnoreZero = ignore
 	}
+}
+
+// WithUpdateStrategy sets the mapping strategy for collection and map updates.
+func WithUpdateStrategy(strategy UpdateStrategy) Option {
+	return func(s *settings) {
+		s.config.UpdateStrategy = strategy
+	}
+}
+
+// UpdateMergeMode enables update strategy merge for slice and map fields.
+func UpdateMergeMode() Option {
+	return WithUpdateStrategy(UpdateMerge)
+}
+
+// UpdateReplaceMode enables update strategy replacement for slice and map fields.
+func UpdateReplaceMode() Option {
+	return WithUpdateStrategy(UpdateReplace)
 }
 
 // IgnoreZero leaves destination fields unchanged when the matching source value is zero.
@@ -185,5 +265,74 @@ func BeforeMapFunc(fn any) Option {
 func AfterMapFunc(fn any) Option {
 	return func(s *settings) {
 		s.afterHooks = append(s.afterHooks, fn)
+	}
+}
+
+type fieldHookSpec struct {
+	field string
+	fn    any
+}
+
+// BeforeField registers a hook that runs before mapping a specific destination
+// field.
+//
+// Field hook signature: func(source, *Destination, *Field) or func(source, *Destination, *Field) error
+func BeforeField[S, D, F any](field string, fn func(S, *D, *F)) Option {
+	return func(s *settings) {
+		s.beforeFieldHooks = append(s.beforeFieldHooks, fieldHookSpec{
+			field: field,
+			fn:    fn,
+		})
+	}
+}
+
+// BeforeFieldE registers an error-returning field hook.
+func BeforeFieldE[S, D, F any](field string, fn func(S, *D, *F) error) Option {
+	return func(s *settings) {
+		s.beforeFieldHooks = append(s.beforeFieldHooks, fieldHookSpec{
+			field: field,
+			fn:    fn,
+		})
+	}
+}
+
+// AfterField registers a hook that runs after mapping a specific destination
+// field.
+func AfterField[S, D, F any](field string, fn func(S, *D, *F)) Option {
+	return func(s *settings) {
+		s.afterFieldHooks = append(s.afterFieldHooks, fieldHookSpec{
+			field: field,
+			fn:    fn,
+		})
+	}
+}
+
+// AfterFieldE registers an error-returning field hook.
+func AfterFieldE[S, D, F any](field string, fn func(S, *D, *F) error) Option {
+	return func(s *settings) {
+		s.afterFieldHooks = append(s.afterFieldHooks, fieldHookSpec{
+			field: field,
+			fn:    fn,
+		})
+	}
+}
+
+// BeforeFieldFunc registers a field hook using reflection.
+func BeforeFieldFunc(field string, fn any) Option {
+	return func(s *settings) {
+		s.beforeFieldHooks = append(s.beforeFieldHooks, fieldHookSpec{
+			field: field,
+			fn:    fn,
+		})
+	}
+}
+
+// AfterFieldFunc registers a field hook using reflection.
+func AfterFieldFunc(field string, fn any) Option {
+	return func(s *settings) {
+		s.afterFieldHooks = append(s.afterFieldHooks, fieldHookSpec{
+			field: field,
+			fn:    fn,
+		})
 	}
 }

@@ -19,6 +19,9 @@ minimal setup, and cached reflection metadata.
 - Reused per-context execution snapshots are stored in `collectionx/mapping.MultiMap`
   so a struct plan only pays converter matching once when the same plan is used
   repeatedly in a mapping context.
+- Dynamic `map[string]any` -> struct mapping can also enforce strict top-level
+  key checks with `WithStrictDynamicMapKeys(true)`, using `collectionx/mapping`
+  lookups for unknown-key detection.
 - Collection mapping uses `github.com/arcgolabs/collectionx/list` reduce helpers.
 - Reflect map iteration uses `MapRange` through a lightweight iterable adapter.
 - Slice and map element mapping precomputes element operations before iterating.

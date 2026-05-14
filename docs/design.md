@@ -25,11 +25,15 @@ Field mapping runs in this order:
 
 1. Resolve source and destination field values from the cached plan.
 2. Apply a default tag value when the source value is missing or zero.
-3. Skip nil or zero source values when patch-style options request it.
-4. Apply an exact converter when one is registered.
-5. Use the precompiled built-in operation when possible.
-6. Recurse into pointers, slices, maps, and structs.
-7. Return a path-aware error when the value cannot be mapped.
+3. Run destination field-level `BeforeField` hooks.
+4. Skip nil or zero source values when patch-style options request it.
+5. Apply an exact converter when one is registered.
+6. If the destination implements `encoding.BinaryUnmarshaler`, invoke
+   `UnmarshalBinary` for `[]byte` / string payloads.
+7. Use the precompiled built-in operation when possible.
+8. Recurse into pointers, slices, maps, and structs.
+9. Run destination field-level `AfterField` hooks.
+10. Return a path-aware error when the value cannot be mapped.
 
 ## Field Matching
 
@@ -69,6 +73,10 @@ Fallback tags can be enabled when existing models already carry field names:
 dto, err := mapper.Map[UserDTO](input, mapper.WithFallbackTags("json", "yaml"))
 ```
 
+When the source is `map[string]any` and strict dynamic key mode is enabled, mapping
+tracks top-level keys used by destination field bindings and reports unknown keys
+via `UnknownFieldsError`.
+
 ## Converters
 
 Converters are exact type-pair functions:
@@ -98,16 +106,18 @@ lookup path to avoid cache allocation overhead.
 
 ## Hooks
 
-Hooks are exact type-pair functions:
+Top-level and field hooks are exact type-based functions.
 
 ```go
 func(S, *D)
 func(S, *D) error
+func(S, *D, *F)
+func(S, *D, *F) error
 ```
 
-Hooks run only for the top-level mapping call. They do not run for every nested
-struct or collection item. This keeps hook behavior predictable and avoids
-surprising side effects in deep object graphs.
+Top-level hooks run for the root mapping call only. Field hooks run during field
+assignment in the destination mapping pipeline and can be triggered for nested
+objects.
 
 Hook state belongs to a `Mapper` instance. Package-level hook registration uses
 the package default mapper; there is no separate package-global hook map. Hook

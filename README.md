@@ -50,6 +50,11 @@ go run ./example/validation
 go run ./example/instances
 go run ./example/patch-update
 go run ./example/dynamic-input
+go run ./example/binary
+go run ./example/strict-dynamic
+go run ./example/field-hooks
+go run ./example/collection-merge
+go run ./example/naming-normalizer
 ```
 
 `MapSlice` and `MapMap` infer the source type from the argument, so only the
@@ -59,6 +64,21 @@ destination element/value type needs to be written.
 
 Fields are matched by normalized names. Case, underscores, hyphens, spaces, and
 dots are ignored, so `UserID`, `user_id`, and `user-id` all match.
+
+If you have legacy naming schemes, you can replace the normalizer:
+
+```go
+normalizeLegacy := func(name string) string {
+    normalized := strings.ToLower(strings.TrimSpace(name))
+    normalized = strings.TrimPrefix(normalized, "u_")
+    return strings.NewReplacer("-", "", "_", "", " ", "", ".", "").Replace(normalized)
+}
+
+dto, err := mapper.Map[UserDTO](
+    LegacySource{},
+    mapper.WithNameNormalizer(normalizeLegacy),
+)
+```
 
 Use `mapper` tags on destination fields when names differ:
 
@@ -110,6 +130,17 @@ dto, err := mapper.Map[UserDTO](
 )
 ```
 
+For custom protocol formats, destination structs can implement
+`encoding.BinaryUnmarshaler` and map directly from `[]byte` or string payloads:
+
+```go
+type Packet struct {
+	...
+}
+
+dto, err := mapper.Map[Packet]([]byte{0x01, 0x02, 0x03})
+```
+
 ## Converters
 
 Converters run before built-in assignment and conversion. Use them for business
@@ -146,8 +177,8 @@ err := m.MapInto(&dto, user)
 
 ## Hooks
 
-Use hooks for small pieces of mapping logic that should stay handwritten. Hooks
-run only around the top-level mapping call and match the exact source type plus
+Use hooks for small pieces of mapping logic that should stay handwritten. Top-level
+hooks run around each mapping call and match the exact source type plus
 destination pointer type.
 
 ```go
@@ -166,6 +197,20 @@ m := mapper.New(
 		if src.ID == 0 {
 			return errors.New("missing user id")
 		}
+		return nil
+	}),
+)
+```
+
+Field hooks run before/after a specific destination field assignment.
+
+```go
+m := mapper.New(
+	mapper.BeforeField("DisplayName", func(src User, dst *UserDTO, field *string) {
+		*field = src.FirstName + " " + src.LastName
+	}),
+	mapper.AfterField("Label", func(src User, dst *UserDTO, field *string) error {
+		*field = "mapped:" + src.Role
 		return nil
 	}),
 )
@@ -218,6 +263,16 @@ turn those into errors.
 dto, err := mapper.Map[UserDTO](user, mapper.Strict())
 ```
 
+For `map[string]any` inputs, use `WithStrictDynamicMapKeys(true)` to fail when
+incoming top-level keys are not bound to any destination field:
+
+```go
+dto, err := mapper.Map[UserDTO](
+	map[string]any{"id": 1, "name": "Ada", "extra": "ignored"},
+	mapper.WithStrictDynamicMapKeys(true),
+)
+```
+
 ## Patch Updates
 
 `MapInto` can be used for patch/update workflows. `IgnoreNil` and `IgnoreZero`
@@ -225,6 +280,13 @@ leave the existing destination value untouched for nil or zero source values:
 
 ```go
 err := mapper.MapInto(&entity, patch, mapper.IgnoreNil(), mapper.IgnoreZero())
+```
+
+You can also control collection/map update behavior:
+
+```go
+err := mapper.MapInto(&entity, patch, mapper.UpdateMergeMode())
+err = mapper.MapInto(&entity, patch, mapper.UpdateReplaceMode())
 ```
 
 ## Errors
@@ -278,8 +340,10 @@ eviction.
 - `mapper:",required"` requires a matching source field.
 - `mapper:",default=value"` fills missing or zero source values.
 - Converters take precedence over built-in assignment and conversion.
-- Hooks run for the top-level call only, not for nested fields or collection items.
+- Hooks include both top-level call hooks and destination field hooks.
 - Nil source pointers, maps, and slices map to zero values.
+- `UpdateMergeMode()` appends/replaces collection fields by merge; `UpdateReplaceMode()`
+  resets them.
 - `IgnoreNil` and `IgnoreZero` preserve destination values in patch-style calls.
 - Whole struct, slice, and map conversion is avoided so nested mapping and
   converters can run field-by-field.

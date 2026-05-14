@@ -9,9 +9,10 @@ import (
 )
 
 type planKey struct {
-	src reflect.Type
-	dst reflect.Type
-	tag string
+	src          reflect.Type
+	dst          reflect.Type
+	tag          string
+	normalizerID string
 }
 
 type plan struct {
@@ -153,17 +154,17 @@ func collectSourceFields(t reflect.Type, cfg Config) *cxmap.Map[string, sourceFi
 		}
 
 		info := sourceField{index: field.Index, typ: field.Type}
-		addSourceAlias(out, field.Name, info)
+		addSourceAlias(out, field.Name, info, cfg)
 		for _, alias := range spec.aliases {
-			addSourceAlias(out, alias, info)
+			addSourceAlias(out, alias, info, cfg)
 		}
 	}
 
 	return out
 }
 
-func addSourceAlias(fields *cxmap.Map[string, sourceField], name string, info sourceField) {
-	key := normalizeName(name)
+func addSourceAlias(fields *cxmap.Map[string, sourceField], name string, info sourceField, cfg Config) {
+	key := normalizeWithConfig(cfg, name)
 	if key == "" {
 		return
 	}
@@ -177,7 +178,7 @@ func resolveSourceField(srcType reflect.Type, sourceFields *cxmap.Map[string, so
 		return resolveSourcePath(srcType, name, cfg)
 	}
 
-	return sourceFields.Get(normalizeName(name))
+	return sourceFields.Get(normalizeWithConfig(cfg, name))
 }
 
 func resolveSourcePath(srcType reflect.Type, path string, cfg Config) (sourceField, bool) {
@@ -191,7 +192,7 @@ func resolveSourcePath(srcType reflect.Type, path string, cfg Config) (sourceFie
 	var typ reflect.Type
 	for _, part := range parts {
 		fields := collectSourceFields(current, cfg)
-		field, ok := fields.Get(normalizeName(part))
+		field, ok := fields.Get(normalizeWithConfig(cfg, part))
 		if !ok {
 			return sourceField{}, false
 		}
@@ -301,6 +302,13 @@ func isExported(field reflect.StructField) bool {
 	return field.PkgPath == ""
 }
 
+func normalizeWithConfig(cfg Config, name string) string {
+	if cfg.NameNormalizer != nil {
+		return cfg.NameNormalizer(name)
+	}
+	return normalizeName(name)
+}
+
 func normalizeName(name string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '_' || r == '-' || r == ' ' || r == '.' {
@@ -309,6 +317,8 @@ func normalizeName(name string) string {
 		return unicode.ToLower(r)
 	}, name)
 }
+
+var defaultNameNormalizer = normalizeName
 
 func derefType(t reflect.Type) reflect.Type {
 	for t.Kind() == reflect.Pointer {

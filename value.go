@@ -1,12 +1,16 @@
 package mapper
 
 import (
+	"encoding"
 	"errors"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 
 	cxmap "github.com/arcgolabs/collectionx/mapping"
 )
+
+var binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 
 type fieldExecution struct {
 	step         fieldStep
@@ -52,6 +56,9 @@ func (ctx *mappingContext) mapValue(srcVal, dstVal reflect.Value, path string) e
 	if ok, err := ctx.applyConverter(srcVal, dstVal, path); ok {
 		return err
 	}
+	if ok, err := ctx.applyBinaryUnmarshal(srcVal, dstVal, path); ok {
+		return err
+	}
 	if assignValue(srcVal, dstVal) {
 		return nil
 	}
@@ -84,6 +91,87 @@ func (ctx *mappingContext) mapZero(srcVal, dstVal reflect.Value) bool {
 		return true
 	}
 	return false
+}
+
+func (ctx *mappingContext) applyBinaryUnmarshal(srcVal, dstVal reflect.Value, path string) (bool, error) {
+	_ = ctx
+	if !isBinaryUnmarshalTarget(dstVal) {
+		return false, nil
+	}
+
+	data, ok := binaryDataFromValue(srcVal)
+	if !ok {
+		return false, nil
+	}
+
+	target, err := ensureBinaryUnmarshalTarget(dstVal)
+	if err != nil {
+		return true, newMappingErrorWithKind(path, srcVal, dstVal, MappingErrorKindBinary, err)
+	}
+	if err := target.Interface().(encoding.BinaryUnmarshaler).UnmarshalBinary(data); err != nil {
+		return true, newMappingErrorWithKind(path, srcVal, dstVal, MappingErrorKindBinary, err)
+	}
+	return true, nil
+}
+
+func isBinaryUnmarshalTarget(dstVal reflect.Value) bool {
+	if !dstVal.IsValid() {
+		return false
+	}
+	if dstVal.Type().Implements(binaryUnmarshalerType) {
+		return true
+	}
+	return dstVal.CanAddr() && dstVal.Addr().Type().Implements(binaryUnmarshalerType)
+}
+
+func ensureBinaryUnmarshalTarget(dstVal reflect.Value) (reflect.Value, error) {
+	if !dstVal.IsValid() {
+		return reflect.Value{}, errors.New("invalid destination value")
+	}
+	if dstVal.Type().Implements(binaryUnmarshalerType) {
+		if dstVal.Kind() == reflect.Pointer && dstVal.IsNil() {
+			dstVal.Set(reflect.New(dstVal.Type().Elem()))
+		}
+		return dstVal, nil
+	}
+	if dstVal.CanAddr() && dstVal.Addr().Type().Implements(binaryUnmarshalerType) {
+		return dstVal.Addr(), nil
+	}
+
+	return reflect.Value{}, fmt.Errorf("destination does not implement encoding.BinaryUnmarshaler")
+}
+
+func binaryDataFromValue(srcVal reflect.Value) ([]byte, bool) {
+	srcVal = unwrapInterface(srcVal)
+	if !srcVal.IsValid() {
+		return nil, false
+	}
+	switch srcVal.Kind() {
+	case reflect.String:
+		return []byte(srcVal.String()), true
+	case reflect.Slice:
+		if srcVal.Type().Elem().Kind() != reflect.Uint8 {
+			return nil, false
+		}
+		byteType := reflect.TypeOf([]byte(nil))
+		if srcVal.Type() == byteType {
+			if srcVal.IsNil() {
+				return nil, true
+			}
+			return srcVal.Interface().([]byte), true
+		}
+		if srcVal.Type().ConvertibleTo(byteType) {
+			converted := srcVal.Convert(byteType)
+			return converted.Interface().([]byte), true
+		}
+		out := make([]byte, srcVal.Len())
+		for i := range out {
+			out[i] = byte(srcVal.Index(i).Convert(reflect.TypeOf(byte(0))).Uint())
+		}
+		return out, true
+	}
+
+	return nil, false
 }
 
 func assignValue(srcVal, dstVal reflect.Value) bool {
@@ -159,9 +247,21 @@ func (ctx *mappingContext) applyKnownConverter(conv converter, srcVal, dstVal re
 	if conv.hasError && !out[1].IsNil() {
 		err, ok := out[1].Interface().(error)
 		if !ok {
-			return newMappingError(path, srcVal, dstVal, fmt.Errorf("converter returned non-error failure"))
+			return newMappingErrorWithKind(
+				path,
+				srcVal,
+				dstVal,
+				MappingErrorKindConverter,
+				fmt.Errorf("converter returned non-error failure"),
+			)
 		}
-		return newMappingError(path, srcVal, dstVal, err)
+		return newMappingErrorWithKind(
+			path,
+			srcVal,
+			dstVal,
+			MappingErrorKindConverter,
+			err,
+		)
 	}
 
 	value := out[0]
@@ -169,7 +269,13 @@ func (ctx *mappingContext) applyKnownConverter(conv converter, srcVal, dstVal re
 		return nil
 	}
 
-	return newMappingError(path, srcVal, dstVal, fmt.Errorf("converter returned %s, cannot assign to %s", value.Type(), dstVal.Type()))
+	return newMappingErrorWithKind(
+		path,
+		srcVal,
+		dstVal,
+		MappingErrorKindConverter,
+		fmt.Errorf("converter returned %s, cannot assign to %s", value.Type(), dstVal.Type()),
+	)
 }
 
 func (ctx *mappingContext) findConverter(src, dst reflect.Type) (converter, bool) {
@@ -229,10 +335,46 @@ func (ctx *mappingContext) mapField(step fieldStep, srcVal, dstVal reflect.Value
 
 	fieldPath := path + "." + step.dstName
 	srcField = unwrapInterface(srcField)
-	if ctx.shouldUseDefault(step, srcField) {
-		return ctx.mapDefaultValue(step.defaultValue, dstField, fieldPath)
+	dstHookVal, hasDstHook := mappingFieldContainer(dstVal)
+	if hasDstHook {
+		if err := ctx.runFieldHooks(beforeFieldHook, srcVal, dstHookVal, dstField.Addr(), fieldPath, step.dstName); err != nil {
+			return err
+		}
 	}
-	return ctx.mapPlannedValueWithoutConverter(step.op, srcField, dstField, fieldPath)
+
+	var mapped bool
+	if ctx.shouldUseDefault(step, srcField) {
+		err := ctx.mapDefaultValue(step.defaultValue, dstField, fieldPath)
+		if err == nil {
+			mapped = true
+		}
+		if err != nil {
+			return err
+		}
+		goto after
+	}
+
+	if ctx.shouldIgnoreSource(srcField) {
+		atomic.AddUint64(&ctx.mapper.metrics.ConditionChecks, 1)
+		atomic.AddUint64(&ctx.mapper.metrics.ConditionSkips, 1)
+		return nil
+	}
+
+	if ctx.mapZero(srcField, dstField) {
+		mapped = true
+		goto after
+	}
+
+	if err := ctx.mapPlannedValueWithoutConverter(step.op, srcField, dstField, fieldPath); err != nil {
+		return err
+	}
+	mapped = true
+
+after:
+	if !mapped || !hasDstHook || !srcField.IsValid() {
+		return nil
+	}
+	return ctx.runFieldHooks(afterFieldHook, srcVal, dstHookVal, dstField.Addr(), fieldPath, step.dstName)
 }
 
 func (ctx *mappingContext) mapFieldWithConverterLookup(step fieldStep, srcVal, dstVal reflect.Value, path string) error {
@@ -241,7 +383,45 @@ func (ctx *mappingContext) mapFieldWithConverterLookup(step fieldStep, srcVal, d
 		return err
 	}
 
-	return ctx.mapPlannedFieldValue(step, srcField, dstField, path+"."+step.dstName)
+	fieldPath := path + "." + step.dstName
+	srcField = unwrapInterface(srcField)
+	dstHookVal, hasDstHook := mappingFieldContainer(dstVal)
+
+	if hasDstHook {
+		if err := ctx.runFieldHooks(beforeFieldHook, srcVal, dstHookVal, dstField.Addr(), fieldPath, step.dstName); err != nil {
+			return err
+		}
+	}
+
+	mapped := false
+	if ctx.shouldUseDefault(step, srcField) {
+		if err := ctx.mapDefaultValue(step.defaultValue, dstField, fieldPath); err != nil {
+			return err
+		}
+		mapped = true
+		goto after
+	}
+
+	if ctx.shouldIgnoreSource(srcField) {
+		atomic.AddUint64(&ctx.mapper.metrics.ConditionChecks, 1)
+		atomic.AddUint64(&ctx.mapper.metrics.ConditionSkips, 1)
+		return nil
+	}
+	if ctx.mapZero(srcField, dstField) {
+		mapped = true
+		goto after
+	}
+
+	if err := ctx.mapPlannedFieldValue(step, srcField, dstField, fieldPath); err != nil {
+		return err
+	}
+	mapped = true
+
+after:
+	if !mapped || !hasDstHook || !srcField.IsValid() {
+		return nil
+	}
+	return ctx.runFieldHooks(afterFieldHook, srcVal, dstHookVal, dstField.Addr(), fieldPath, step.dstName)
 }
 
 func (ctx *mappingContext) mapFieldExecution(exec fieldExecution, srcVal, dstVal reflect.Value, path string) error {
@@ -252,23 +432,57 @@ func (ctx *mappingContext) mapFieldExecution(exec fieldExecution, srcVal, dstVal
 	}
 
 	fieldPath := path + "." + step.dstName
+	srcField = unwrapInterface(srcField)
+	dstHookVal, hasDstHook := mappingFieldContainer(dstVal)
+	if hasDstHook {
+		if err := ctx.runFieldHooks(beforeFieldHook, srcVal, dstHookVal, dstField.Addr(), fieldPath, step.dstName); err != nil {
+			return err
+		}
+	}
+
+	mapped := false
 	if exec.hasConverter {
-		srcField = unwrapInterface(srcField)
 		if ctx.shouldUseDefault(step, srcField) {
-			return ctx.mapDefaultValue(step.defaultValue, dstField, fieldPath)
+			if err := ctx.mapDefaultValue(step.defaultValue, dstField, fieldPath); err != nil {
+				return err
+			}
+			mapped = true
+			goto after
 		}
 		if ctx.shouldIgnoreSource(srcField) {
+			atomic.AddUint64(&ctx.mapper.metrics.ConditionChecks, 1)
+			atomic.AddUint64(&ctx.mapper.metrics.ConditionSkips, 1)
 			return nil
 		}
 		if ctx.mapZero(srcField, dstField) {
-			return nil
+			mapped = true
+			goto after
 		}
-		return ctx.applyKnownConverter(exec.converter, srcField, dstField, fieldPath)
+		if err := ctx.applyKnownConverter(exec.converter, srcField, dstField, fieldPath); err != nil {
+			return err
+		}
+		mapped = true
+		goto after
 	}
+
 	if step.op == opDynamic {
-		return ctx.mapPlannedValue(step.op, srcField, dstField, fieldPath)
+		if err := ctx.mapPlannedValue(step.op, srcField, dstField, fieldPath); err != nil {
+			return err
+		}
+		mapped = true
+		goto after
 	}
-	return ctx.mapPlannedValueWithoutConverter(step.op, srcField, dstField, fieldPath)
+
+	if err := ctx.mapPlannedValueWithoutConverter(step.op, srcField, dstField, fieldPath); err != nil {
+		return err
+	}
+	mapped = true
+
+after:
+	if !mapped || !hasDstHook || !srcField.IsValid() {
+		return nil
+	}
+	return ctx.runFieldHooks(afterFieldHook, srcVal, dstHookVal, dstField.Addr(), fieldPath, step.dstName)
 }
 
 func (ctx *mappingContext) resolveFieldValues(step fieldStep, srcVal, dstVal reflect.Value, path string) (reflect.Value, reflect.Value, bool, error) {
@@ -334,16 +548,6 @@ func (ctx *mappingContext) mapPlannedFieldValue(step fieldStep, srcVal, dstVal r
 		return ctx.mapPlannedValue(step.op, srcVal, dstVal, path)
 	}
 
-	srcVal = unwrapInterface(srcVal)
-	if ctx.shouldUseDefault(step, srcVal) {
-		return ctx.mapDefaultValue(step.defaultValue, dstVal, path)
-	}
-	if ctx.shouldIgnoreSource(srcVal) {
-		return nil
-	}
-	if ctx.mapZero(srcVal, dstVal) {
-		return nil
-	}
 	if conv, ok := ctx.converters.findKey(step.convKey); ok {
 		return ctx.applyKnownConverter(conv, srcVal, dstVal, path)
 	}
@@ -353,6 +557,8 @@ func (ctx *mappingContext) mapPlannedFieldValue(step fieldStep, srcVal, dstVal r
 func (ctx *mappingContext) mapPlannedValueWithoutConverter(op valueOp, srcVal, dstVal reflect.Value, path string) error {
 	srcVal = unwrapInterface(srcVal)
 	if ctx.shouldIgnoreSource(srcVal) {
+		atomic.AddUint64(&ctx.mapper.metrics.ConditionChecks, 1)
+		atomic.AddUint64(&ctx.mapper.metrics.ConditionSkips, 1)
 		return nil
 	}
 	if ctx.mapZero(srcVal, dstVal) {
@@ -364,9 +570,29 @@ func (ctx *mappingContext) mapPlannedValueWithoutConverter(op valueOp, srcVal, d
 func (ctx *mappingContext) mapWithoutConverter(op valueOp, srcVal, dstVal reflect.Value, path string) error {
 	switch op {
 	case opAssign:
+		if ctx.config.UpdateStrategy == UpdateMerge {
+			if srcVal.Kind() == reflect.Slice && dstVal.Kind() == reflect.Slice {
+				return ctx.mapSlice(srcVal, dstVal, path)
+			}
+			if srcVal.Kind() == reflect.Map && dstVal.Kind() == reflect.Map {
+				return ctx.mapMap(srcVal, dstVal, path)
+			}
+		}
 		dstVal.Set(srcVal)
 		return nil
 	case opConvert:
+		if ctx.config.UpdateStrategy == UpdateMerge {
+			converted := srcVal
+			if converted.Type().ConvertibleTo(dstVal.Type()) {
+				converted = converted.Convert(dstVal.Type())
+			}
+			if converted.Kind() == reflect.Slice && dstVal.Kind() == reflect.Slice {
+				return ctx.mapSlice(converted, dstVal, path)
+			}
+			if converted.Kind() == reflect.Map && dstVal.Kind() == reflect.Map {
+				return ctx.mapMap(converted, dstVal, path)
+			}
+		}
 		dstVal.Set(srcVal.Convert(dstVal.Type()))
 		return nil
 	case opPointer:
@@ -390,8 +616,10 @@ func (ctx *mappingContext) executionPlan(p *plan) []fieldExecution {
 		ctx.executionPlans = newExecutionPlanMap()
 	}
 	if cached, ok := ctx.executionPlans.Get(p); ok {
+		atomic.AddUint64(&ctx.mapper.metrics.ExecutionPlanHits, 1)
 		return cached
 	}
+	atomic.AddUint64(&ctx.mapper.metrics.ExecutionPlanMisses, 1)
 
 	steps := make([]fieldExecution, 0, len(p.steps))
 	for _, step := range p.steps {
@@ -418,6 +646,38 @@ func (ctx *mappingContext) shouldUseDefault(step fieldStep, srcVal reflect.Value
 	return srcVal.IsZero()
 }
 
+func mappingFieldContainer(dstVal reflect.Value) (reflect.Value, bool) {
+	if !dstVal.IsValid() {
+		return reflect.Value{}, false
+	}
+	if dstVal.CanAddr() {
+		return dstVal.Addr(), true
+	}
+	return reflect.Value{}, false
+}
+
+func newMappingErrorWithKind(path string, srcVal, dstVal reflect.Value, kind MappingErrorKind, cause error) error {
+	var srcType reflect.Type
+	if srcVal.IsValid() {
+		srcType = srcVal.Type()
+	}
+	var dstType reflect.Type
+	if dstVal.IsValid() {
+		dstType = dstVal.Type()
+	}
+	var existing *MappingError
+	if cause != nil && errors.As(cause, &existing) {
+		return cause
+	}
+	return &MappingError{
+		Path:            path,
+		SourceType:      srcType,
+		DestinationType: dstType,
+		Kind:            kind,
+		Cause:           cause,
+	}
+}
+
 func newMappingError(path string, srcVal, dstVal reflect.Value, cause error) error {
 	var srcType reflect.Type
 	if srcVal.IsValid() {
@@ -435,6 +695,7 @@ func newMappingError(path string, srcVal, dstVal reflect.Value, cause error) err
 		Path:            path,
 		SourceType:      srcType,
 		DestinationType: dstType,
+		Kind:            inferMappingErrorKind(cause),
 		Cause:           cause,
 	}
 }

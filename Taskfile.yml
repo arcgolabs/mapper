@@ -33,6 +33,11 @@ tasks:
       - go run ./example/instances
       - go run ./example/patch-update
       - go run ./example/dynamic-input
+      - go run ./example/binary
+      - go run ./example/strict-dynamic
+      - go run ./example/field-hooks
+      - go run ./example/collection-merge
+      - go run ./example/naming-normalizer
 
   preflight:
     desc: Run fast validation before release.

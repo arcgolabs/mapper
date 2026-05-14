@@ -15,6 +15,11 @@ Each folder below is an independent `package main` example that can be run separ
   fields, and default values.
 - `dynamic-input`: `map[string]any` input, fallback tags, nested paths, and
   typed mapping errors.
+- `binary`: custom protocol payloads via `encoding.BinaryUnmarshaler`.
+- `strict-dynamic`: strict top-level key validation for map inputs.
+- `field-hooks`: before/after hooks bound to individual destination fields.
+- `collection-merge`: merge vs replace strategy for slice/map fields.
+- `naming-normalizer`: custom field-name normalizer for legacy or prefixed models.
 
 ## Run all examples
 
@@ -28,6 +33,11 @@ go run ./example/validation
 go run ./example/instances
 go run ./example/patch-update
 go run ./example/dynamic-input
+go run ./example/binary
+go run ./example/strict-dynamic
+go run ./example/field-hooks
+go run ./example/collection-merge
+go run ./example/naming-normalizer
 ```
 
 ## Expected outputs
@@ -109,4 +119,39 @@ create: {Name:Lin Role:user Active:true} err=<nil>
 ```text
 dynamic: {ID:7 Name:Ada Email:ada@example.com Role:user} err=<nil>
 mapping error: path=$.ID src=[]string dst=int
+```
+
+### `binary`
+
+```text
+from bytes: main.Packet{Version:1, Kind:"\x01", Payload:[102 111 111]} err=<nil>
+from string: main.Packet{Version:1, Kind:"\x01", Payload:[102 111 111]} err=<nil>
+from invalid bytes err=mapper: $ [binary] cannot map []uint8 to main.Packet: packet too short
+```
+
+### `strict-dynamic`
+
+```text
+loose: main.UserDTO{ID:7, Name:"Ada"} err=<nil>
+strict unknown keys: [role]
+```
+
+### `field-hooks`
+
+```text
+dto: main.UserDTO{Name:"ADA LOVELACE", Label:"mapped:admin"}
+```
+
+### `collection-merge`
+
+```text
+merge: main.Destination{Tags:[]string{"base", "new", "hotfix"}, Meta:map[string]string{"env":"prod", "region":"us-east"}} err=<nil>
+replace: main.Destination{Tags:[]string{"again"}, Meta:map[string]string{"team":"infra"}} err=<nil>
+```
+
+### `naming-normalizer`
+
+```text
+{ID:7 Name:"Ada"}
+{ID:42 Name:"Grace Hopper"}
 ```
